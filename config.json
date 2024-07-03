@@ -1,6 +1,0 @@
-{
-    "root": "./example",
-    "overwrite": true,
-    "target": "target",
-    "sources": ["source1", "source2"]
-}
