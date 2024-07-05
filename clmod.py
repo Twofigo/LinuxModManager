@@ -18,7 +18,7 @@ def clear_path(path):
     # create the folder again
     os.mkdir(path)
 
-def merge(source_path, target_path, depth=0, overwrite=False, verbose=False):
+def merge(source_path, target_path, depth=0, overwrite=False, verbose=False, copy=False):
     print(f"{'  ' * depth}Merging {source_path} to {target_path}")
 
     # symlink all files in the source directory to the target directory
@@ -42,7 +42,12 @@ def merge(source_path, target_path, depth=0, overwrite=False, verbose=False):
                 continue
 
         # symlink the file
-        os.symlink(absolute_path(f.path), target_file)
+        
+        if not copy:
+            os.symlink(absolute_path(f.path), target_file)
+        else:
+            shtil.copy(absolute_path(f.path), absolute_path(target_file))
+            
         if verbose:
             print(f"{'  ' * depth} Symlinked {f.path} to {target_path}")
 
@@ -101,11 +106,36 @@ def move(source_path, target_path, verbose=False):
     basename = os.path.basename(source_path)
     os.rename(os.path.join(target_folder, basename), target_path)
 
-    # create an empty folder in the source root
+    # re-create an empty folder in the source root
     os.mkdir(source_path)
 
-# CLI tool function
+def clear_symlinks(path, depth=0, verbose=False):
+    # symlink all files in the source directory to the target directory
+    for f in os.scandir(path):
+        if not f.is_file():
+            continue
+            
+        # if symlink remove
+        if os.path.islink(f.path):
+            os.remove(f.path)
+    
+    # for all directories, recursively call the merge function
+    for f in os.scandir(path):
+        # if the file is a directory
+        if not f.is_dir():
+            continue
 
+        clear_symlinks(f.path, depth + 1, verbose)
+    
+    # for all empty folders, remove them
+    for f in os.scandir(path):
+        if not f.is_dir():
+            continue
+
+        if path_is_empty(f.path):
+            os.rmdir(f.path)   
+
+# CLI tool function
 
 def load_config(config_path, config_name="config.json", verbose=False):
     config = {}
@@ -115,6 +145,8 @@ def load_config(config_path, config_name="config.json", verbose=False):
         config['target_path'] = conf['target']
         config['source_root'] = conf['source_root']
         config['overwrite'] = conf['overwrite']
+        config['copy_core'] = conf['copy_core']
+        config['copy_modules'] = conf['copy_modules']
 
         config['source_paths'] = [os.path.join(conf['source_root'], s) for s in conf['sources']]
         config['core_path'] = os.path.join(conf['source_root'], "_core")
@@ -150,6 +182,8 @@ def save_config(config, config_path, config_name="config.json", verbose=False):
     conf['source_root'] = config['source_root']
     conf['overwrite'] = config['overwrite']
     conf['sources'] = [os.path.relpath(s, config['source_root']) for s in config['source_paths']]
+    conf['copy_core'] = config['copy_core']
+    conf['copy_modules'] = config['copy_modules']
     
     with open(os.path.join(config_path, config_name), "w") as f:
         json.dump(conf, f)
@@ -191,7 +225,33 @@ def create_module(config, name, copy, verbose=False):
     else:
         print(f"Path found, added to config")
 
+def build(config, verbose=False):
+    overwrite = config['overwrite']
+    clear_path(config['target_path'])
+    assert path_is_empty(config['target_path']), "Target directory is not empty"
+    
+    copy_core = config['copy_core']
+    copy_modules = config['copy_modules']
+    
+    if os.path.exists(config['core_path']):
+        merge(config["core_path"], config['target_path'], verbose=verbose, overwrite=True, copy=copy_core)
+    
+    for source in config["source_paths"]:
+        merge(source, config['target_path'], overwrite=overwrite, verbose=verbose, copy=copy_modules)
+    
+    return
+
 # main runner
+
+def prune(config, verbose=False):
+    # for each module in the source paths
+    for path in config["source_paths"]:
+        # check if the path exists
+        if not os.path.exists(path):
+            continue
+    
+        clear_symlinks(path, verbose=verbose)
+
 
 def runner(command, flags=[]):
     # print working directory
@@ -203,10 +263,6 @@ def runner(command, flags=[]):
         verbose = True
         print("Verbose mode on")
 
-    overwrite = False
-    if sum([f in flags for f in ['-o", "--overwrite']]):
-        overwrite = True
-
     if command == "init":
         # target path
         config = {}
@@ -214,7 +270,7 @@ def runner(command, flags=[]):
         config['source_root'] = input("Source root: ")
         config['core_path'] = os.path.join(config['source_root'], "_core")
         config['source_paths'] = []
-        config['overwrite'] = False
+        config['overwrite'] = True
 
         setup(config)
         # create config file
@@ -236,14 +292,7 @@ def runner(command, flags=[]):
         return
     
     if command == "build":
-        clear_path(config['target_path'])
-        assert path_is_empty(config['target_path']), "Target directory is not empty"
-        
-        if os.path.exists(config['core_path']):
-            merge(config["core_path"], config['target_path'], verbose=verbose, overwrite=True)
-        
-        for source in config["source_paths"]:
-            merge(source, config['target_path'], overwrite=overwrite, verbose=verbose)
+        build(config, verbose=verbose)
         return
     
     if command == "setup":
@@ -258,7 +307,7 @@ def runner(command, flags=[]):
         name = input("Name of the module: ")
         copy = input("Copy folder structure from target? (y/n): ")
         copy = copy.lower() == "y"
-        create_module(config["core_path"], config['source_root'], name, copy, verbose)
+        create_module(config, name, copy, verbose)
         
         # save to config
         config['source_paths'].append(os.path.join(config['source_root'], name))
@@ -280,8 +329,30 @@ def runner(command, flags=[]):
             os.rmdir(path)
         return
     
+    if command == "add-from-diff":
+        name = input("Name of the module: ")
+        clear_symlinks(config['target_path'], verbose=verbose)
+        
+        module_path = os.path.join(config['source_root'], name)
+        # move remaining content to the module folder
+        move(config['target_path'], module_path)
+        
+        # add the new module to the config
+        
+        config['source_paths'].append(module_path)
+        save_config(config, config['source_root'], "config.json")
+        
+        # rebuild the target
+        build(config, verbose=verbose)
+        return 
+    
+    if command == "prune":
+        prune(config, verbose=verbose)
+        return
+    
     # unrecognized command
     print(f"Unrecognized command: {command}")
+
 
 # get all flags from terminal
 args = os.sys.argv
