@@ -147,6 +147,7 @@ def load_config(config_path, config_name="config.json", verbose=False):
         config['overwrite'] = conf['overwrite']
         config['copy_core'] = conf['copy_core']
         config['copy_modules'] = conf['copy_modules']
+        config['exceptions'] = conf['exceptions']
 
         config['source_paths'] = [os.path.join(conf['source_root'], s) for s in conf['sources']]
         config['core_path'] = os.path.join(conf['source_root'], "_core")
@@ -184,6 +185,7 @@ def save_config(config, config_path, config_name="config.json", verbose=False):
     conf['sources'] = [os.path.relpath(s, config['source_root']) for s in config['source_paths']]
     conf['copy_core'] = config['copy_core']
     conf['copy_modules'] = config['copy_modules']
+    conf['exceptions'] = config['exceptions']
     
     with open(os.path.join(config_path, config_name), "w") as f:
         json.dump(conf, f)
@@ -227,7 +229,6 @@ def create_module(config, name, copy, verbose=False):
 
 def build(config, verbose=False):
     overwrite = config['overwrite']
-    clear_path(config['target_path'])
     assert path_is_empty(config['target_path']), "Target directory is not empty"
     
     copy_core = config['copy_core']
@@ -252,6 +253,48 @@ def prune(config, verbose=False):
     
         clear_symlinks(path, verbose=verbose)
 
+def save_exceptions(config, verbose=False):
+    
+    exceptions_path = os.path.join(config["source_root"], "_exceptions")
+    if not os.path.exists(exceptions_path):
+        os.mkdir(exceptions_path)
+    
+    clear_path(exceptions_path)
+    merge_structure(config['target_path'], exceptions_path)
+    
+    # for all files in exception, move from target to source
+    
+    import glob
+    exceptions = []
+    for rule in config['exceptions']:
+        files = glob.glob(rule, root_dir=config["target_path"], recursive=True)
+        if verbose:
+            print("rule", rule)
+            print("found: ")
+            [print(f) for f in files]
+        
+        exceptions.extend(files)
+    
+    for f in exceptions:
+        target_file = os.path.join(config['target_path'], f)
+        source_file = os.path.join(exceptions_path, f)
+        
+        # move the file
+        try:
+            shtil.copy(target_file, source_file, follow_symlinks=True)
+        except FileNotFoundError:
+            if verbose:
+                print(f"File not found: {f}")
+            continue
+        
+def load_exceptions(config, verbose=False):
+    exceptions_path = os.path.join(config["source_root"], "_exceptions")
+    
+    if not os.path.exists(exceptions_path):
+        print("no eceptions found in exceptions folder")
+        return
+    
+    merge(exceptions_path, config['target_path'], copy=True, verbose=verbose, overwrite=True)
 
 def runner(command, flags=[]):
     # print working directory
@@ -293,6 +336,14 @@ def runner(command, flags=[]):
     
     if command == "build":
         build(config, verbose=verbose)
+        load_exceptions(config, verbose=verbose)
+        return
+    
+    if command == "rebuild":
+        save_exceptions(config, verbose=verbose)
+        clear_path(config['target_path'])
+        build(config, verbose=verbose)
+        load_exceptions(config, verbose=verbose)
         return
     
     if command == "setup":
@@ -300,6 +351,7 @@ def runner(command, flags=[]):
         return
 
     if command == "restore":
+        save_exceptions(config, verbose=verbose)
         restore(config)
         return
 
