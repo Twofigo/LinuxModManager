@@ -19,40 +19,45 @@ def clear_path(path):
     os.mkdir(path)
 
 def merge(source_path, target_path, depth=0, overwrite=False, verbose=False, copy=False):
-    print(f"{'  ' * depth}Merging {source_path} to {target_path}")
-
+   
+    action = "added"
     # symlink all files in the source directory to the target directory
     for f in os.scandir(source_path):
+
         if not f.is_file():
             continue
     
         target_file = os.path.join(target_path, f.name)
         exist = os.path.exists(target_file) or os.path.islink(target_file)
 
+        
         # if the file already exists in the target directory
         if exist:
             if overwrite:
                 # remove the symlink or file
                 os.remove(target_file)
-                if verbose:
-                    print(f"{'  ' * depth} Removed {target_file}")
+                action = "overwrote"
             else:
                 # skip the file
-                print(f"{'  ' * depth} Skipping {f.path}")
+                print(f"  Skipped {f.path}")
                 continue
 
         # symlink the file
         
-        if not copy:
-            os.symlink(absolute_path(f.path), target_file)
-        else:
+        if copy:
+            action = "copied"
             shtil.copy(absolute_path(f.path), absolute_path(target_file))
             
+        else:
+            action = "softlinked"
+            os.symlink(absolute_path(f.path), absolute_path(target_file))
+            
         if verbose:
-            print(f"{'  ' * depth} Symlinked {f.path} to {target_path}")
+            print(f"  {action} {target_file}")
 
     # for all directories, recursively call the merge function
     for f in os.scandir(source_path):
+
         # if the file is a directory
         if not f.is_dir():
             continue
@@ -65,7 +70,7 @@ def merge(source_path, target_path, depth=0, overwrite=False, verbose=False, cop
             if verbose:
                 print(f"{'  ' * depth} Created directory {target_file}")
 
-        merge(f.path, target_file, depth + 1, overwrite, verbose)
+        merge(f.path, target_file, depth + 1, overwrite=overwrite, verbose=verbose, copy=copy)
 
 def merge_structure(source_path, target_path, depth=0, verbose=False):
     # for all directories, recursively call the merge function
@@ -75,10 +80,10 @@ def merge_structure(source_path, target_path, depth=0, verbose=False):
             continue
 
         target_file = os.path.join(target_path, f.name)
-        exist = os.path.exists(target_file) or os.path.islink(target_file)
+        exist = os.path.exists(target_file)
 
         if not exist:
-            os.mkdir(target_file)
+            os.mkdir(absolute_path(target_file))
             if verbose:
                 print(f"{'  ' * depth} Created directory {target_file}")
 
@@ -142,15 +147,18 @@ def load_config(config_path, config_name="config.json", verbose=False):
     # read souces and target from config.yaml
     with open(os.path.join(config_path, config_name)) as f:
         conf = json.load(f)
-        config['target_path'] = conf['target']
-        config['source_root'] = conf['source_root']
-        config['overwrite'] = conf['overwrite']
-        config['copy_core'] = conf['copy_core']
-        config['copy_modules'] = conf['copy_modules']
-        config['exceptions'] = conf['exceptions']
+        try:
+            config['target_path'] = conf['target']
+            config['source_root'] = conf['source_root']
+            config['overwrite'] = conf['overwrite']
+            config['copy_core'] = conf['copy_core']
+            config['copy_modules'] = conf['copy_modules']
+            config['exceptions'] = conf['exceptions']
 
-        config['source_paths'] = [os.path.join(conf['source_root'], s) for s in conf['sources']]
-        config['core_path'] = os.path.join(conf['source_root'], "_core")
+            config['source_paths'] = [os.path.join(conf['source_root'], s) for s in conf['sources']]
+            config['core_path'] = os.path.join(conf['source_root'], "_core")
+        except KeyError:
+            assert False, "Config file is not valid"
         
     # check if the target path exists
     if not os.path.exists(config['target_path']):
@@ -235,57 +243,83 @@ def build(config, verbose=False):
     copy_modules = config['copy_modules']
     
     if os.path.exists(config['core_path']):
-        merge(config["core_path"], config['target_path'], verbose=verbose, overwrite=True, copy=copy_core)
+        if verbose:
+            print("Merging core")
+        merge(config["core_path"], config['target_path'], verbose=False, overwrite=True, copy=copy_core)
     
     for source in config["source_paths"]:
-        merge(source, config['target_path'], overwrite=overwrite, verbose=verbose, copy=copy_modules)
+        if verbose:
+            print(f"Merging source {source}")
+        merge(source, config['target_path'], overwrite=overwrite, verbose=False, copy=copy_modules)
     
     return
 
 # main runner
 
-def prune(config, verbose=False):
+def prune(path , verbose=False):
     # for each module in the source paths
-    for path in config["source_paths"]:
-        # check if the path exists
-        if not os.path.exists(path):
-            continue
+    # check if the path exists
+    if not os.path.exists(path):
+        return
+
+    clear_symlinks(path, verbose=verbose)
+
+def prune_multiple(paths: list, verbose=False):
+    for path in paths:
+        prune(path, verbose=verbose)
+
+def eval_exceptions(config, rule):
+   
+    # for all files in exception, move from target to source
     
-        clear_symlinks(path, verbose=verbose)
+    import glob
+
+    files = glob.glob(rule, root_dir=config["target_path"], recursive=True)
+    files = [f for f in files if not os.path.islink(os.path.join(config["target_path"], f))]
+    
+    return files
+
+def list_affected_exceptions(config):
+    exceptions = []
+    for rule in config['exceptions']:
+        excepts = eval_exceptions(config, rule)
+        print(f"evaluating rule {rule}")
+        [print(f"  found {f}") for f in excepts]
+    
+    return exceptions
 
 def save_exceptions(config, verbose=False):
-    
     exceptions_path = os.path.join(config["source_root"], "_exceptions")
+    
     if not os.path.exists(exceptions_path):
         os.mkdir(exceptions_path)
     
     clear_path(exceptions_path)
-    merge_structure(config['target_path'], exceptions_path)
+    merge_structure(config['target_path'], exceptions_path, verbose=False)
     
-    # for all files in exception, move from target to source
-    
-    import glob
-    exceptions = []
     for rule in config['exceptions']:
-        files = glob.glob(rule, root_dir=config["target_path"], recursive=True)
         if verbose:
-            print("rule", rule)
-            print("found: ")
-            [print(f) for f in files]
+            print(f"evaluating rule {rule}")
         
-        exceptions.extend(files)
-    
-    for f in exceptions:
-        target_file = os.path.join(config['target_path'], f)
-        source_file = os.path.join(exceptions_path, f)
+        excepts = eval_exceptions(config, rule)
         
-        # move the file
-        try:
-            shtil.copy(target_file, source_file, follow_symlinks=True)
-        except FileNotFoundError:
+        for f in excepts:
+            target_file = os.path.join(config['target_path'], f)
+            source_file = os.path.join(exceptions_path, f)
+            
+            action = "saved"
+            
+            # move the file
+            try:
+                shtil.copy(absolute_path(target_file), absolute_path(source_file))
+                # wait for the file to be copied
+            except:
+                action = "failed"
+            
             if verbose:
-                print(f"File not found: {f}")
-            continue
+                print(f"  {action} {absolute_path(source_file)}")
+    
+    prune(exceptions_path, verbose=verbose)
         
 def load_exceptions(config, verbose=False):
     exceptions_path = os.path.join(config["source_root"], "_exceptions")
@@ -296,35 +330,44 @@ def load_exceptions(config, verbose=False):
     
     merge(exceptions_path, config['target_path'], copy=True, verbose=verbose, overwrite=True)
 
-def runner(command, flags=[]):
-    # print working directory
-    print(f"Working directory: {os.getcwd()}")
 
-    # flags
-    verbose = False
-    if sum([f in flags for f in ['-v", "--verbose']]):
-        verbose = True
-        print("Verbose mode on")
+def config_runner(command,config, verbose=False):
+    if command == "list":
+        print(f"Target: {config['target_path']}")
+        print(f"Source root: {config['source_root']}")
+        print(f"Overwrite: {config['overwrite']}")
+        print(f"Copy core: {config['copy_core']}")
+        print(f"Copy modules: {config['copy_modules']}")
+        print(f"Exceptions: {config['exceptions']}")
 
-    if command == "init":
-        # target path
-        config = {}
-        config['target_path'] = input("Target path: ")
-        config['source_root'] = input("Source root: ")
-        config['core_path'] = os.path.join(config['source_root'], "_core")
-        config['source_paths'] = []
-        config['overwrite'] = True
+def exceptions_runner(command,config,verbose=False):
+    
+    if command == "save":
+        save_exceptions(config, verbose=verbose)
+    
+    elif command == "check":
+        list_affected_exceptions(config)
+    
+    elif command == "load":
+        load_exceptions(config, verbose=verbose)
+    
+    elif command == "list":
+        print("Exceptions: []")
+        for rule in config['exceptions']:
+            print(f"  {rule}")
 
-        setup(config)
-        # create config file
+    elif command == "add":
+        rule = input("Rule: ")
+        config['exceptions'].append(rule)
         save_config(config, config['source_root'], "config.json")
 
-    # read config file
-    if verbose:
-        print("loading config...")
-    config = load_config(".")
-    print("loaded config!")
-    
+    elif command == "remove":
+        for rule in config['exceptions']:
+            print(f"  {rule}")
+        ruleid = input("Rule_id: ")
+        config['exceptions'].pop(ruleid)
+
+def module_runner(command,config, verbose=False, name=None):
     if command == "list":
         print("Sources: []")
         for path in config["source_paths"]:
@@ -332,30 +375,10 @@ def runner(command, flags=[]):
         
         print("")
         print(f"Target: {config['target_path']}")
-        return
     
-    if command == "build":
-        build(config, verbose=verbose)
-        load_exceptions(config, verbose=verbose)
-        return
-    
-    if command == "rebuild":
-        save_exceptions(config, verbose=verbose)
-        clear_path(config['target_path'])
-        build(config, verbose=verbose)
-        load_exceptions(config, verbose=verbose)
-        return
-    
-    if command == "setup":
-        setup(config)
-        return
-
-    if command == "restore":
-        save_exceptions(config, verbose=verbose)
-        restore(config)
-        return
-
-    if command == "add":
+    elif command == "add":
+        if name is None:
+            name = input("Name of the module: ")
         name = input("Name of the module: ")
         copy = input("Copy folder structure from target? (y/n): ")
         copy = copy.lower() == "y"
@@ -366,8 +389,9 @@ def runner(command, flags=[]):
         save_config(config, config['source_root'], "config.json")
         return
 
-    if command == "remove":
-        name = input("Name of the module: ")
+    elif command == "remove":
+        if name is None:
+            name = input("Name of the module: ")
         path = os.path.join(config['source_root'], name)
         if path in config['source_paths']:
             config['source_paths'].remove(path)
@@ -379,9 +403,8 @@ def runner(command, flags=[]):
         if clear:
             clear_path(path)
             os.rmdir(path)
-        return
-    
-    if command == "add-from-diff":
+        
+    elif command == "add-from-diff":
         name = input("Name of the module: ")
         clear_symlinks(config['target_path'], verbose=verbose)
         
@@ -396,25 +419,94 @@ def runner(command, flags=[]):
         
         # rebuild the target
         build(config, verbose=verbose)
-        return 
-    
+        
     if command == "prune":
         prune(config, verbose=verbose)
+         
+def target_runner(command,config,verbose=False):
+    if command == "init":
+        # target path
+        config = {}
+        config['target_path'] = input("Target path: ")
+        config['source_root'] = input("Source root: ")
+        config['core_path'] = os.path.join(config['source_root'], "_core")
+        config['source_paths'] = []
+        config['overwrite'] = True
+
+        setup(config)
+        # create config file
+        save_config(config, config['source_root'], "config.json")
+    
+    if command == "setup":
+        setup(config)
+        return
+
+    if command == "restore":
+        save_exceptions(config, verbose=verbose)
+        restore(config)
         return
     
-    # unrecognized command
-    print(f"Unrecognized command: {command}")
+    if command == "build":
+        build(config, verbose=verbose)
+        load_exceptions(config, verbose=verbose)
+        return
+    
+    if command == "rebuild":
+        save_exceptions(config, verbose=verbose)
+        clear_path(config['target_path'])
+        build(config, verbose=verbose)
+        load_exceptions(config, verbose=verbose)
+        return
+    
+def runner(catagory, command, flags):
+    config = load_config(".")
 
+    verbose = flags.verbose
 
-# get all flags from terminal
-args = os.sys.argv
+    if catagory == "config":
+        config_runner(command,config, verbose=verbose)
+    elif catagory == "exceptions":
+        exceptions_runner(command,config, verbose=verbose)
+    elif catagory == "module":
+        name = flags.name
+        if name == "":
+            name = None
+        
+        module_runner(command,config, verbose=verbose, name=name)
+    elif catagory == "target":
+        target_runner(command,config, verbose=verbose)
 
-if len(args) < 2:
-    print("No command provided")
-    exit()
+if __name__ == "__main__":
+        
+    # get all flags from terminal
+    args = os.sys.argv
+    import argparse
+    parser = argparse.ArgumentParser(description='CLMod')
+    parsers = parser.add_subparsers(dest='catagory', help='subcommand to execute')
 
-command = args[1]
-flags = args[2:]
-flags = [f for f in flags if f.startswith("-")]
+    config_parser = parsers.add_parser('config', help='Configure the profile json file')
+    config_parser.add_argument('command', type=str, help='Config action', choices=['init', 'list'])
+    config_parser.add_argument('-v', '--verbose', action='store_true', help='verbose mode')
 
-runner(command, flags)
+    exceptions_parser = parsers.add_parser('exceptions', help='Configure the exceptions that should be protected from deletion')
+    exceptions_parser.add_argument('command', type=str, help='Exceptions action', choices=['save', 'load', 'list', 'add', 'remove', 'check'])
+    exceptions_parser.add_argument('-v', '--verbose', action='store_true', help='verbose mode')
+
+    module_parser = parsers.add_parser('module', help='Add and remove modules from the load-order')
+    module_parser.add_argument('command', type=str, help='Module action', choices=['add', 'remove', 'add-from-diff'])
+    module_parser.add_argument('-v', '--verbose', action='store_true', help='verbose mode')
+    module_parser.add_argument('-n', '--name', default="", type=str, help='name of the module')
+    
+    builder_parser = parsers.add_parser('target', help='Build the target directory from the config and sources')
+    builder_parser.add_argument('command', type=str, help='Builder action', choices=['build', 'rebuild', 'setup', 'restore'])
+    builder_parser.add_argument('-v', '--verbose', action='store_true', help='verbose mode')
+
+    # verbose flag 
+    parser.add_argument('-v', '--verbose', action='store_true', help='verbose mode')
+
+    args = parser.parse_args()
+    catagory = args.catagory
+    command = args.command
+
+    runner(catagory, command, args)
+
