@@ -1,0 +1,1 @@
+{"target": "../Stardew Valley", "source_root": ".", "overwrite": true, "sources": ["modTools", "stardewExpanded", "qualityOfLife", "textures", "farm", "cuter", "dialoge"], "copy_core": true, "copy_modules": false, "exceptions": ["**/*config.json", "**/.*config.json"]}
