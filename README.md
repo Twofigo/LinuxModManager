@@ -128,5 +128,8 @@ Mods are less linkley to encoutner this problem, so core and modules are seperat
 **config.json** the configuration that describes target, sources, and some settigs.
 
 # Future plans
-## Mod profiles
-I wanna split the config into a general config and a 
+1. **Mod profiles**:
+I wanna split the config into a general config and a profile config, so i can jump between modding profiles by just using a different modules list.
+2. **Hardlink mode**: Hardlinks have some higher restrictions, but could solve my bugs with linking executables.
+3. **Better help**: the help command isn't quite as fleshed out as it should be. 
+4. **Better test enviroment**: I've written this script while using it for games. But some unit tests are needed now that i have a decent design i'm happy with.
